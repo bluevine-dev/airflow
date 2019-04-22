@@ -917,6 +917,7 @@ class SchedulerJob(BaseJob):
         # update the state of the previously active dag runs
         dag_runs = DagRun.find(dag_id=dag.dag_id, state=State.RUNNING, session=session)
         active_dag_runs = []
+        dag_run_finished_ti_map = {}
         for run in dag_runs:
             self.log.info("Examining DAG run %s", run)
             # don't consider runs that are executed in the future
@@ -939,6 +940,10 @@ class SchedulerJob(BaseJob):
             run.dag = dag
             # todo: preferably the integrity check happens at dag collection time
             run.verify_integrity(session=session)
+            # we try to collect all dependencies at dagrun level to avoid running this for each task
+            finished_tasks = run.get_task_instances(state=State.finished(), session=session)
+            dag_run_finished_ti_map[run.id] = finished_tasks
+            run.update_state(session=session, finished_tasks=dag_run_finished_ti_map[run.id])
             run.update_state(session=session)
             if run.state == State.RUNNING:
                 make_transient(run)
@@ -961,7 +966,8 @@ class SchedulerJob(BaseJob):
                 ti.task = task
 
                 if ti.are_dependencies_met(
-                        dep_context=DepContext(flag_upstream_failed=True),
+                        dep_context=DepContext(flag_upstream_failed=True,
+                                               finished_tasks=dag_run_finished_ti_map[run.id]),
                         session=session):
                     self.log.debug('Queuing task: %s', ti)
                     queue.append(ti.key)
