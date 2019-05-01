@@ -108,6 +108,8 @@ class TriggerRuleDep(BaseTIDep):
                     upstream_failed = len(list(g))
             done = len(upstream_tasks_sorted)
             return successes, skipped, failed, upstream_failed, done
+        else:
+            return 0, 0, 0, 0, 0
 
     @provide_session
     def _evaluate_trigger_rule(
