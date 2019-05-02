@@ -26,6 +26,25 @@ from airflow.utils.state import State
 from itertools import groupby
 
 
+def _get_states_count_upstream_ti(ti, finished_tasks):
+    successes, skipped, failed, upstream_failed, done = 0, 0, 0, 0, 0
+    upstream_tasks = [finished_task for finished_task in finished_tasks
+                      if finished_task.task_id in ti.task.upstream_task_ids]
+    if upstream_tasks:
+        upstream_tasks_sorted = sorted(upstream_tasks, key=lambda x: x.state)
+        for k, g in groupby(upstream_tasks_sorted, key=lambda x: x.state):
+            if k == State.SUCCESS:
+                successes = len(list(g))
+            elif k == State.SKIPPED:
+                skipped = len(list(g))
+            elif k == State.FAILED:
+                failed = len(list(g))
+            elif k == State.UPSTREAM_FAILED:
+                upstream_failed = len(list(g))
+        done = len(upstream_tasks_sorted)
+    return successes, skipped, failed, upstream_failed, done
+
+
 class TriggerRuleDep(BaseTIDep):
     """
     Determines if a task's upstream tasks are in a state that allows a given task instance
@@ -53,7 +72,6 @@ class TriggerRuleDep(BaseTIDep):
         # TODO(unknown): this query becomes quite expensive with dags that have many
         # tasks. It should be refactored to let the task report to the dag run and get the
         # aggregates from there.
-        successes, skipped, failed, upstream_failed, done = 0, 0, 0, 0, 0
         if dep_context.finished_tasks is None:
             qry = (
                 session
@@ -78,7 +96,7 @@ class TriggerRuleDep(BaseTIDep):
             successes, skipped, failed, upstream_failed, done = qry.first()
         else:
             # see if the task name is in the task upstream for our task
-            successes, skipped, failed, upstream_failed, done = self._get_states_count_upstream_ti(
+            successes, skipped, failed, upstream_failed, done = _get_states_count_upstream_ti(
                 ti=ti,
                 finished_tasks=dep_context.finished_tasks)
         for dep_status in self._evaluate_trigger_rule(
@@ -92,24 +110,7 @@ class TriggerRuleDep(BaseTIDep):
                 session=session):
             yield dep_status
 
-    def _get_states_count_upstream_ti(self, ti, finished_tasks):
-        upstream_tasks = [finished_task for finished_task in finished_tasks
-                          if finished_task.task_id in ti.task.upstream_task_ids]
-        if upstream_tasks:
-            upstream_tasks_sorted = sorted(upstream_tasks, key=lambda x: x.state)
-            for k, g in groupby(upstream_tasks_sorted, key=lambda x: x.state):
-                if k == State.SUCCESS:
-                    successes = len(list(g))
-                elif k == State.SKIPPED:
-                    skipped = len(list(g))
-                elif k == State.FAILED:
-                    failed = len(list(g))
-                elif k == State.UPSTREAM_FAILED:
-                    upstream_failed = len(list(g))
-            done = len(upstream_tasks_sorted)
-            return successes, skipped, failed, upstream_failed, done
-        else:
-            return 0, 0, 0, 0, 0
+
 
     @provide_session
     def _evaluate_trigger_rule(
