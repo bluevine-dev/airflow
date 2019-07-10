@@ -18,7 +18,7 @@
 # under the License.
 
 
-class State:
+class   State:
     """
     Static class with task instance states constants and color method to
     avoid hardcoding.
@@ -99,6 +99,7 @@ class State:
             cls.SUCCESS,
             cls.FAILED,
             cls.SKIPPED,
+            cls.UPSTREAM_FAILED
         ]
 
     @classmethod
