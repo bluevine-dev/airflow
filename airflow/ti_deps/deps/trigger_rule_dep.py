@@ -75,7 +75,7 @@ class TriggerRuleDep(BaseTIDep):
         if dep_context.finished_tasks is None:
             qry = (
                 session
-                    .query(
+                .query(
                     func.coalesce(func.sum(
                         case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
                     func.coalesce(func.sum(
@@ -86,7 +86,7 @@ class TriggerRuleDep(BaseTIDep):
                         case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
                     func.count(TI.task_id),
                 )
-                    .filter(
+                .filter(
                     TI.dag_id == ti.dag_id,
                     TI.task_id.in_(ti.task.upstream_task_ids),
                     TI.execution_date == ti.execution_date,
