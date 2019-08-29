@@ -16,6 +16,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from itertools import groupby
 
 from sqlalchemy import case, func
 
@@ -34,6 +35,25 @@ class TriggerRuleDep(BaseTIDep):
     IGNOREABLE = True
     IS_TASK_DEP = True
 
+    @staticmethod
+    def _get_states_count_upstream_ti(ti, finished_tasks):
+        successes, skipped, failed, upstream_failed, done = 0, 0, 0, 0, 0
+        upstream_tasks = [finished_task for finished_task in finished_tasks
+                          if finished_task.task_id in ti.task.upstream_task_ids]
+        if upstream_tasks:
+            upstream_tasks_sorted = sorted(upstream_tasks, key=lambda x: x.state)
+            for k, g in groupby(upstream_tasks_sorted, key=lambda x: x.state):
+                if k == State.SUCCESS:
+                    successes = len(list(g))
+                elif k == State.SKIPPED:
+                    skipped = len(list(g))
+                elif k == State.FAILED:
+                    failed = len(list(g))
+                elif k == State.UPSTREAM_FAILED:
+                    upstream_failed = len(list(g))
+            done = len(upstream_tasks_sorted)
+        return successes, skipped, failed, upstream_failed, done
+
     @provide_session
     def _get_dep_statuses(self, ti, session, dep_context):
         TI = airflow.models.TaskInstance
@@ -49,43 +69,42 @@ class TriggerRuleDep(BaseTIDep):
             yield self._passing_status(reason="The task had a dummy trigger rule set.")
             return
 
-        # TODO(unknown): this query becomes quite expensive with dags that have many
-        # tasks. It should be refactored to let the task report to the dag run and get the
-        # aggregates from there.
-        qry = (
-            session
-            .query(
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.FAILED, 1)], else_=0)), 0),
-                func.coalesce(func.sum(
-                    case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
-                func.count(TI.task_id),
+        if dep_context.finished_tasks is None:
+            qry = (
+                session
+                .query(
+                    func.coalesce(func.sum(
+                        case([(TI.state == State.SUCCESS, 1)], else_=0)), 0),
+                    func.coalesce(func.sum(
+                        case([(TI.state == State.SKIPPED, 1)], else_=0)), 0),
+                    func.coalesce(func.sum(
+                        case([(TI.state == State.FAILED, 1)], else_=0)), 0),
+                    func.coalesce(func.sum(
+                        case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)), 0),
+                    func.count(TI.task_id),
+                )
+                .filter(
+                    TI.dag_id == ti.dag_id,
+                    TI.task_id.in_(ti.task.upstream_task_ids),
+                    TI.execution_date == ti.execution_date,
+                    TI.state.in_(State.finished()),
+                )
             )
-            .filter(
-                TI.dag_id == ti.dag_id,
-                TI.task_id.in_(ti.task.upstream_task_ids),
-                TI.execution_date == ti.execution_date,
-                TI.state.in_([
-                    State.SUCCESS, State.FAILED,
-                    State.UPSTREAM_FAILED, State.SKIPPED]),
-            )
-        )
-
-        successes, skipped, failed, upstream_failed, done = qry.first()
-        for dep_status in self._evaluate_trigger_rule(
+            successes, skipped, failed, upstream_failed, done = qry.first()
+        else:
+            # see if the task name is in the task upstream for our task
+            successes, skipped, failed, upstream_failed, done = self._get_states_count_upstream_ti(
                 ti=ti,
-                successes=successes,
-                skipped=skipped,
-                failed=failed,
-                upstream_failed=upstream_failed,
-                done=done,
-                flag_upstream_failed=dep_context.flag_upstream_failed,
-                session=session):
-            yield dep_status
+                finished_tasks=dep_context.finished_tasks)
+        yield from self._evaluate_trigger_rule(
+            ti=ti,
+            successes=successes,
+            skipped=skipped,
+            failed=failed,
+            upstream_failed=upstream_failed,
+            done=done,
+            flag_upstream_failed=dep_context.flag_upstream_failed,
+            session=session)
 
     @provide_session
     def _evaluate_trigger_rule(

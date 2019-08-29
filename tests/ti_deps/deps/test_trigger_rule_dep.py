@@ -19,12 +19,17 @@
 
 import unittest
 from datetime import datetime
+from airflow.utils import timezone
 
-from airflow.models import BaseOperator, TaskInstance
+from airflow import settings
+from airflow.operators.dummy_operator import DummyOperator
+
+from airflow.models import BaseOperator, TaskInstance, DAG
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.ti_deps.deps.trigger_rule_dep import TriggerRuleDep
 from airflow.utils.db import create_session
 from airflow.utils.state import State
+from tests import DEFAULT_DATE
 
 
 class TriggerRuleDepTest(unittest.TestCase):
@@ -361,3 +366,55 @@ class TriggerRuleDepTest(unittest.TestCase):
 
         self.assertEqual(len(dep_statuses), 1)
         self.assertFalse(dep_statuses[0].passed)
+
+    def test_get_states_count_upstream_ti(self):
+        """
+        this test tests the helper function '_get_states_count_upstream_ti' as a unit and inside update_state
+        """
+        get_states_count_upstream_ti = TriggerRuleDep._get_states_count_upstream_ti
+        session = settings.Session()
+        now = timezone.utcnow()
+        dag = DAG(
+            'test_dagrun_with_pre_tis',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op5 = DummyOperator(task_id='E', trigger_rule=TriggerRule.ONE_FAILED)
+
+            op1.set_downstream([op2, op3])  # op1 >> op2, op3
+            op4.set_upstream([op3, op2])  # op3 >> op4
+            op5.set_upstream([op2, op3, op4])  # (op2, op3, op4) >> op5
+
+        dag.clear()
+        dr = dag.create_dagrun(run_id='test_dagrun_with_pre_tis',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        ti_op1 = TaskInstance(task=dag.get_task(op1.task_id), execution_date=dr.execution_date)
+        ti_op2 = TaskInstance(task=dag.get_task(op2.task_id), execution_date=dr.execution_date)
+        ti_op3 = TaskInstance(task=dag.get_task(op3.task_id), execution_date=dr.execution_date)
+        ti_op4 = TaskInstance(task=dag.get_task(op4.task_id), execution_date=dr.execution_date)
+        ti_op5 = TaskInstance(task=dag.get_task(op5.task_id), execution_date=dr.execution_date)
+
+        ti_op1.set_state(state=State.SUCCESS, session=session)
+        ti_op2.set_state(state=State.FAILED, session=session)
+        ti_op3.set_state(state=State.SUCCESS, session=session)
+        ti_op4.set_state(state=State.SUCCESS, session=session)
+        ti_op5.set_state(state=State.SUCCESS, session=session)
+
+        finished_tasks = dr.get_task_instances(state=State.finished(), session=session)
+        self.assertEqual(get_states_count_upstream_ti(finished_tasks=finished_tasks, ti=ti_op2),
+                         (1, 0, 0, 0, 1))
+        self.assertEqual(get_states_count_upstream_ti(finished_tasks=finished_tasks, ti=ti_op4),
+                         (1, 0, 1, 0, 2))
+        self.assertEqual(get_states_count_upstream_ti(finished_tasks=finished_tasks, ti=ti_op5),
+                         (2, 0, 1, 0, 3))
+
+        state = dr.update_state(finished_tasks=finished_tasks)
+        self.assertEqual(State.SUCCESS, state)

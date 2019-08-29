@@ -103,6 +103,7 @@ class State(object):
             cls.SUCCESS,
             cls.FAILED,
             cls.SKIPPED,
+            cls.UPSTREAM_FAILED
         ]
 
     @classmethod
